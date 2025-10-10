@@ -2,13 +2,14 @@ import json
 import os
 import importlib
 import config
+import asyncio
+import aiohttp  # <-- ping uchun
 from telegram import Update, ReplyKeyboardMarkup, InlineKeyboardMarkup, InlineKeyboardButton
 from telegram.ext import (
     ApplicationBuilder, CommandHandler, MessageHandler, filters, ContextTypes, CallbackQueryHandler
 )
 from config import TOKEN, ADMIN_ID, CHANNEL_ID
 
-# --- CHANNEL_IDS mavjud bo‘lmasa, bo‘sh ro‘yxat
 CHANNEL_IDS = getattr(config, "CHANNEL_IDS", [])
 
 MOVIES_FILE = "movies.json"
@@ -76,8 +77,7 @@ async def handle_admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
 
     elif text == "➕ KANAL QO‘SHISH":
         await update.message.reply_text(
-            "🔗 Yangi kanalni kiriting:\n\n"
-            "➡️ @username yoki https://t.me/... formatida bo‘lishi kerak."
+            "🔗 Yangi kanalni kiriting:\n➡️ @username yoki https://t.me/... formatida bo‘lishi kerak."
         )
         context.user_data["changing_channel"] = True
         return True
@@ -177,7 +177,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id == ADMIN_ID and context.user_data.get("awaiting_code"):
         movies = load_json(MOVIES_FILE)
         if text in movies:
-            await update.message.reply_text("⚠️ Bu kod allaqachon mavjud! \n Iltimos boshqa kod kiriting:", reply_markup=admin_menu())
+            await update.message.reply_text("⚠️ Bu kod allaqachon mavjud! \nIltimos boshqa kod kiriting:", reply_markup=admin_menu())
             return
 
         file_id = context.user_data.get("temp_video_id")
@@ -224,13 +224,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id == ADMIN_ID and context.user_data.get("changing_channel"):
         new_channel = {"id": raw_text, "link": f"https://t.me/{raw_text[1:]}" if raw_text.startswith("@") else raw_text}
         CHANNEL_IDS.append(new_channel)
-
         with open("config.py", "w", encoding="utf-8") as f:
             f.write(f'TOKEN = "{config.TOKEN}"\n')
             f.write(f'ADMIN_ID = {config.ADMIN_ID}\n')
             f.write(f'CHANNEL_ID = "{config.CHANNEL_ID}"\n')
             f.write(f'CHANNEL_IDS = {json.dumps(CHANNEL_IDS, ensure_ascii=False, indent=4)}\n')
-
         importlib.reload(config)
         await update.message.reply_text(f"✅ Kanal qo‘shildi: {raw_text}", reply_markup=admin_menu())
         context.user_data.clear()
@@ -274,14 +272,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     else:
         await update.message.reply_text("❌ Bunday kod topilmadi.")
 
-# --- Asosiy ishga tushirish
+# --- Ping qilish (uxlamasligi uchun)
+async def ping_bot():
+    while True:
+        try:
+            async with aiohttp.ClientSession() as session:
+                async with session.get("https://movie-bot-j6pc.onrender.com") as resp:
+                    print(f"[PING] Status: {resp.status}")
+        except Exception as e:
+            print(f"[PING] Xato: {e}")
+        await asyncio.sleep(300)  # har 5 daqiqa
+
+# --- Ishga tushirish
 def main():
     app = ApplicationBuilder().token(TOKEN).build()
 
+    # Handlerlar
     app.add_handler(CommandHandler("start", start))
     app.add_handler(MessageHandler(filters.VIDEO, handle_video))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(check_callback, pattern="check_membership"))
+
+    # Ping task
+    app.job_queue.run_repeating(lambda ctx: asyncio.create_task(ping_bot()), interval=300, first=10)
 
     print("🤖 Bot ishga tushdi...")
     app.run_polling()
