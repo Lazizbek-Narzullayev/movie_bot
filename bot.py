@@ -178,23 +178,58 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if user_id == ADMIN_ID and await handle_admin_buttons(update, context):
         return
 
-    # --- Kanal qo‘shish ---
+    # --- Kanal qo‘shish (link yoki username) ---
     if user_id == ADMIN_ID and context.user_data.get("adding_channel"):
         channels = await get_channels()
-        new_channel = {"id": raw_text, "link": raw_text}
-        channels.append(new_channel)
-        await save_channels(channels)
-        context.user_data.clear()
-        await update.message.reply_text("✅ Kanal qo‘shildi.", reply_markup=admin_menu())
+        if raw_text.startswith("https://"):
+            # Link kiritilgan, ID so'rash
+            context.user_data["temp_channel_link"] = raw_text
+            context.user_data["adding_channel"] = False
+            context.user_data["awaiting_channel_id"] = True
+            await update.message.reply_text("🔢 Kanal ID sini kiriting (masalan: -1001234567890):")
+        else:
+            # Username kiritilgan
+            username = raw_text.lstrip('@')
+            channel_id = f"@{username}"
+            link = f"https://t.me/{username}"
+            # Avoid duplicates
+            if not any(ch["id"] == channel_id or ch["link"] == link for ch in channels):
+                new_channel = {"id": channel_id, "link": link}
+                channels.append(new_channel)
+                await save_channels(channels)
+                context.user_data.clear()
+                await update.message.reply_text("✅ Kanal qo‘shildi.", reply_markup=admin_menu())
+            else:
+                await update.message.reply_text("⚠️ Bu kanal allaqachon qo‘shilgan.", reply_markup=admin_menu())
+        return
+
+    # --- Kanal ID kiritish (https linkdan keyin) ---
+    if user_id == ADMIN_ID and context.user_data.get("awaiting_channel_id"):
+        channels = await get_channels()
+        channel_id = raw_text  # Assuming it's the numerical ID like -1001234567890
+        link = context.user_data.get("temp_channel_link")
+        # Avoid duplicates
+        if not any(ch["id"] == channel_id or ch["link"] == link for ch in channels):
+            new_channel = {"id": channel_id, "link": link}
+            channels.append(new_channel)
+            await save_channels(channels)
+            context.user_data.clear()
+            await update.message.reply_text("✅ Kanal qo‘shildi.", reply_markup=admin_menu())
+        else:
+            await update.message.reply_text("⚠️ Bu kanal allaqachon qo‘shilgan.", reply_markup=admin_menu())
         return
 
     # --- Kanal o‘chirish ---
     if user_id == ADMIN_ID and context.user_data.get("deleting_channel"):
         channels = await get_channels()
+        initial_count = len(channels)
         channels = [ch for ch in channels if ch["id"] != raw_text and ch["link"] != raw_text]
-        await save_channels(channels)
-        context.user_data.clear()
-        await update.message.reply_text("🗑 Kanal o‘chirildi.", reply_markup=admin_menu())
+        if len(channels) < initial_count:
+            await save_channels(channels)
+            context.user_data.clear()
+            await update.message.reply_text("🗑 Kanal o‘chirildi.", reply_markup=admin_menu())
+        else:
+            await update.message.reply_text("⚠️ Bunday kanal topilmadi.", reply_markup=admin_menu())
         return
 
     # --- Kino kod kiritish ---
