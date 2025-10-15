@@ -277,7 +277,7 @@ async def ping_bot():
     while True:
         try:
             async with aiohttp.ClientSession() as session:
-                async with session.get("https://movie-bot-j6pc.onrender.com") as resp:
+                async with session.get("https://api.render.com/deploy/srv-d3kkrn6mcj7s73e8rme0?key=y0Ns-uhijBA") as resp:
                     print(f"[PING] Status: {resp.status}")
         except Exception as e:
             print(f"[PING] Xato: {e}")
