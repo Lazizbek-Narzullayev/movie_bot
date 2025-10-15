@@ -22,7 +22,7 @@ def run_flask():
     app.run(host="0.0.0.0", port=10000)
 
 # ===== Telegram bot qismi =====
-CHANNEL_IDS = getattr(config, "CHANNEL_IDS", [])
+CONFIG_FILE = "config.json"
 MOVIES_FILE = "movies.json"
 USERS_FILE = "users.json"
 
@@ -34,10 +34,7 @@ def ensure_file(file, default_data):
 def load_json(file):
     ensure_file(file, {} if "movie" in file else [])
     with open(file, "r", encoding="utf-8") as f:
-        data = json.load(f)
-        if "users" in file:
-            return list(set(data))
-        return data
+        return json.load(f)
 
 def save_json(file, data):
     with open(file, "w", encoding="utf-8") as f:
@@ -53,12 +50,21 @@ def admin_menu():
         resize_keyboard=True
     )
 
-async def get_non_joined_channels(context: ContextTypes.DEFAULT_TYPE, user_id: int, channel_ids: list):
+async def get_channels():
+    config_data = load_json(CONFIG_FILE)
+    return config_data.get("channels", [])
+
+async def save_channels(channels):
+    config_data = load_json(CONFIG_FILE)
+    config_data["channels"] = channels
+    save_json(CONFIG_FILE, config_data)
+
+async def get_non_joined_channels(context, user_id):
+    channels = await get_channels()
     non_joined = []
-    for ch in channel_ids:
-        channel_id = ch["id"] if isinstance(ch, dict) else ch
+    for ch in channels:
         try:
-            member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+            member = await context.bot.get_chat_member(chat_id=ch["id"], user_id=user_id)
             if member.status in ["left", "kicked"]:
                 non_joined.append(ch)
         except Exception:
@@ -83,14 +89,12 @@ async def handle_admin_buttons(update: Update, context: ContextTypes.DEFAULT_TYP
         return True
 
     elif text == "➕ KANAL QO‘SHISH":
-        await update.message.reply_text(
-            "🔗 Yangi kanalni kiriting:\n➡️ @username yoki https://t.me/... formatida bo‘lishi kerak."
-        )
-        context.user_data["changing_channel"] = True
+        await update.message.reply_text("🔗 Kanal username yoki linkni kiriting (masalan: @MyChannel yoki https://t.me/MyChannel):")
+        context.user_data["adding_channel"] = True
         return True
 
     elif text == "➖ KANAL O‘CHIRISH":
-        await update.message.reply_text("❌ O‘chirmoqchi bo‘lgan kanal ID yoki username kiriting:")
+        await update.message.reply_text("❌ O‘chirmoqchi bo‘lgan kanal username kiriting (masalan: @MyChannel):")
         context.user_data["deleting_channel"] = True
         return True
 
@@ -117,12 +121,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🎬 Salom, admin!", reply_markup=admin_menu())
         return
 
-    if CHANNEL_IDS:
-        non_joined = await get_non_joined_channels(context, user_id, CHANNEL_IDS)
+    channels = await get_channels()
+    if channels:
+        non_joined = await get_non_joined_channels(context, user_id)
         if non_joined:
             buttons = [
                 [InlineKeyboardButton("📢 Obuna bo‘lish", url=ch["link"])]
-                for ch in non_joined if isinstance(ch, dict)
+                for ch in non_joined
             ]
             buttons.append([InlineKeyboardButton("✅ Tekshirish", callback_data="check_membership")])
             await update.message.reply_text(
@@ -138,17 +143,16 @@ async def check_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.answer()
     user_id = query.from_user.id
 
-    if CHANNEL_IDS:
-        non_joined = await get_non_joined_channels(context, user_id, CHANNEL_IDS)
-        if non_joined:
-            buttons = [
-                [InlineKeyboardButton("📢 Obuna bo‘lish", url=ch["link"])]
-                for ch in non_joined if isinstance(ch, dict)
-            ]
-            buttons.append([InlineKeyboardButton("✅ Tekshirish", callback_data="check_membership")])
-            await query.edit_message_text("⚠️ Hali barcha kanallarga obuna bo‘lmadingiz.", reply_markup=InlineKeyboardMarkup(buttons))
-        else:
-            await query.edit_message_text("✅ Obuna bo‘ldingiz! Endi kod yuboring.")
+    non_joined = await get_non_joined_channels(context, user_id)
+    if non_joined:
+        buttons = [
+            [InlineKeyboardButton("📢 Obuna bo‘lish", url=ch["link"])]
+            for ch in non_joined
+        ]
+        buttons.append([InlineKeyboardButton("✅ Tekshirish", callback_data="check_membership")])
+        await query.edit_message_text("⚠️ Hali barcha kanallarga obuna bo‘lmadingiz.", reply_markup=InlineKeyboardMarkup(buttons))
+    else:
+        await query.edit_message_text("✅ Obuna bo‘ldingiz! Endi kod yuboring.")
 
 async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if update.effective_user.id != ADMIN_ID:
@@ -164,63 +168,46 @@ async def handle_video(update: Update, context: ContextTypes.DEFAULT_TYPE):
     context.user_data["temp_video_id"] = video.file_id
     context.user_data["adding_movie"] = False
     context.user_data["awaiting_code"] = True
-
     await update.message.reply_text("🔢 Shu kinoga kod kiriting (masalan: FAST10):")
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    global CHANNEL_IDS
+    user_id = update.effective_user.id
     text = update.message.text.strip().upper()
     raw_text = update.message.text.strip()
-    user_id = update.effective_user.id
 
     if user_id == ADMIN_ID and await handle_admin_buttons(update, context):
         return
 
+    # --- Kanal qo‘shish ---
+    if user_id == ADMIN_ID and context.user_data.get("adding_channel"):
+        channels = await get_channels()
+        new_channel = {"id": raw_text, "link": raw_text}
+        channels.append(new_channel)
+        await save_channels(channels)
+        context.user_data.clear()
+        await update.message.reply_text("✅ Kanal qo‘shildi.", reply_markup=admin_menu())
+        return
+
+    # --- Kanal o‘chirish ---
+    if user_id == ADMIN_ID and context.user_data.get("deleting_channel"):
+        channels = await get_channels()
+        channels = [ch for ch in channels if ch["id"] != raw_text and ch["link"] != raw_text]
+        await save_channels(channels)
+        context.user_data.clear()
+        await update.message.reply_text("🗑 Kanal o‘chirildi.", reply_markup=admin_menu())
+        return
+
+    # --- Kino kod kiritish ---
     if user_id == ADMIN_ID and context.user_data.get("awaiting_code"):
         movies = load_json(MOVIES_FILE)
-        if text in movies:
-            await update.message.reply_text("⚠️ Bu kod allaqachon mavjud! Iltimos boshqa kod kiriting:", reply_markup=admin_menu())
-            return
-
         file_id = context.user_data.get("temp_video_id")
-        movies[text] = file_id
+        movies[text] = {"file_id": file_id}
         save_json(MOVIES_FILE, movies)
-
-        try:
-            msg = await context.bot.send_video(
-                chat_id=CHANNEL_ID,
-                video=file_id,
-                caption=f"🎬 Kino kodi: `{text}`",
-                parse_mode="Markdown"
-            )
-            movies[text] = {"file_id": file_id, "msg_id": msg.message_id}
-            save_json(MOVIES_FILE, movies)
-            await update.message.reply_text(f"✅ Kino saqlandi va kanalga yuborildi.\nKod: {text}", reply_markup=admin_menu())
-        except Exception as e:
-            await update.message.reply_text(f"❌ Kanalga yuborishda xato: {e}", reply_markup=admin_menu())
-
+        await update.message.reply_text(f"✅ Kino saqlandi.\nKod: {text}", reply_markup=admin_menu())
         context.user_data.clear()
         return
 
-    if user_id == ADMIN_ID and context.user_data.get("deleting_movie"):
-        movies = load_json(MOVIES_FILE)
-        if text not in movies:
-            await update.message.reply_text("❌ Bunday kod topilmadi.", reply_markup=admin_menu())
-            context.user_data.clear()
-            return
-
-        movie = movies.pop(text)
-        save_json(MOVIES_FILE, movies)
-
-        try:
-            await context.bot.delete_message(chat_id=CHANNEL_ID, message_id=movie["msg_id"])
-            await update.message.reply_text(f"🗑 Kino '{text}' o‘chirildi (kanaldan ham).", reply_markup=admin_menu())
-        except Exception:
-            await update.message.reply_text(f"⚠️ Kino '{text}' o‘chirildi, lekin kanaldan o‘chirilmadi.", reply_markup=admin_menu())
-
-        context.user_data.clear()
-        return
-
+    # --- Kino olish (user uchun) ---
     movies = load_json(MOVIES_FILE)
     if text in movies:
         await update.message.reply_video(movies[text]["file_id"], caption=f"🎬 Kod: {text}")
@@ -230,12 +217,10 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # === Ishga tushirish ===
 def main():
     app_bot = ApplicationBuilder().token(TOKEN).build()
-
     app_bot.add_handler(CommandHandler("start", start))
     app_bot.add_handler(MessageHandler(filters.VIDEO, handle_video))
     app_bot.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app_bot.add_handler(CallbackQueryHandler(check_callback, pattern="check_membership"))
-
     print("🤖 Bot va Flask server ishga tushdi...")
     threading.Thread(target=run_flask).start()
     app_bot.run_polling()
